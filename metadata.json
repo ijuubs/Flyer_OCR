@@ -1,0 +1,5 @@
+{
+  "name": "Fiji Supermarket Price Tracker",
+  "description": "OCR-powered extraction of Fiji supermarket flyers for price comparison and trend analysis.",
+  "requestFramePermissions": ["camera"]
+}

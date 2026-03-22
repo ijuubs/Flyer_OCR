@@ -1,0 +1,65 @@
+{
+  "entities": {
+    "Store": {
+      "title": "Store",
+      "description": "A supermarket store in Fiji",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the supermarket (e.g., MH, RB Patel, NewWorld)" },
+        "location": { "type": "string", "description": "Physical location or branch name" },
+        "openingHours": { "type": "string", "description": "Store opening hours" },
+        "logoUrl": { "type": "string", "description": "URL to the store logo" }
+      },
+      "required": ["name"]
+    },
+    "Flyer": {
+      "title": "Flyer",
+      "description": "A promotional flyer from a supermarket",
+      "type": "object",
+      "properties": {
+        "storeId": { "type": "string", "description": "Reference to the Store entity" },
+        "uploadDate": { "type": "string", "format": "date-time", "description": "When the flyer was uploaded" },
+        "validityStart": { "type": "string", "format": "date-time", "description": "Start date of the promotion" },
+        "validityEnd": { "type": "string", "format": "date-time", "description": "End date of the promotion" },
+        "imageUrl": { "type": "string", "description": "URL to the flyer image" },
+        "processed": { "type": "boolean", "description": "Whether the flyer has been OCR processed" }
+      },
+      "required": ["storeId", "imageUrl"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "A unique product item",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the product" },
+        "category": { "type": "string", "description": "Product category (e.g., Dairy, Meat, Pantry)" },
+        "brand": { "type": "string", "description": "Brand of the product" },
+        "lastPrice": { "type": "number", "description": "The most recently recorded price" },
+        "lastStoreId": { "type": "string", "description": "The store where the last price was recorded" }
+      },
+      "required": ["name"]
+    },
+    "PriceRecord": {
+      "title": "PriceRecord",
+      "description": "A specific price point for a product at a store from a flyer",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string", "description": "Reference to the Product entity" },
+        "flyerId": { "type": "string", "description": "Reference to the Flyer entity" },
+        "storeId": { "type": "string", "description": "Reference to the Store entity" },
+        "price": { "type": "number", "description": "The promotional price" },
+        "unit": { "type": "string", "description": "Unit of measurement (e.g., kg, pack, 500g)" },
+        "originalPrice": { "type": "number", "description": "The original price before discount" },
+        "extractedAt": { "type": "string", "format": "date-time", "description": "When the price was extracted" },
+        "isSpecial": { "type": "boolean", "description": "Whether this is a special deal" }
+      },
+      "required": ["productId", "storeId", "price"]
+    }
+  },
+  "firestore": {
+    "stores": { "schema": "Store", "description": "Collection of supermarket stores" },
+    "flyers": { "schema": "Flyer", "description": "Collection of uploaded flyers" },
+    "products": { "schema": "Product", "description": "Collection of unique products" },
+    "prices": { "schema": "PriceRecord", "description": "Collection of historical price records" }
+  }
+}

@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: stores
+    // Fields: name, location, openingHours, logoUrl
+    //
+    // Collection: flyers
+    // Fields: storeId, uploadDate, validityStart, validityEnd, imageUrl, processed
+    //
+    // Collection: products
+    // Fields: name, category, brand, lastPrice, lastStoreId
+    //
+    // Collection: prices
+    // Fields: productId, flyerId, storeId, price, unit, originalPrice, extractedAt, isSpecial
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "vitideals@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidStore(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             (!('location' in data) || (data.location is string && data.location.size() < 200)) &&
+             (!('openingHours' in data) || (data.openingHours is string && data.openingHours.size() < 200)) &&
+             (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() < 500));
+    }
+
+    function isValidFlyer(data) {
+      return data.storeId is string &&
+             data.imageUrl is string && data.imageUrl.size() < 1000 &&
+             (!('processed' in data) || data.processed is bool);
+    }
+
+    function isValidProduct(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             (!('category' in data) || (data.category is string && data.category.size() < 100)) &&
+             (!('brand' in data) || (data.brand is string && data.brand.size() < 100));
+    }
+
+    function isValidPrice(data) {
+      return data.productId is string &&
+             data.storeId is string &&
+             data.price is number && data.price >= 0 &&
+             (!('unit' in data) || (data.unit is string && data.unit.size() < 50)) &&
+             (!('originalPrice' in data) || (data.originalPrice is number && data.originalPrice >= 0)) &&
+             (!('isSpecial' in data) || data.isSpecial is bool);
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create, update: if isAuthenticated() && request.auth.uid == userId && 
+        (!('role' in request.resource.data) || request.resource.data.role == 'user' || isAdmin());
+    }
+
+    match /stores/{storeId} {
+      allow read: if true; // Publicly readable
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /flyers/{flyerId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated() && isValidFlyer(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated() && isValidProduct(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /prices/{priceId} {
+      allow read: if true;
+      allow create, update: if isAuthenticated() && isValidPrice(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
