@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useState, useEffect } from 'react';
 import { auth } from '@/firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut } from 'firebase/auth';
@@ -12,7 +13,6 @@ export default function Auth() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
-      setLoading(loading);
       setLoading(false);
     });
     return () => unsubscribe();
@@ -53,7 +53,15 @@ export default function Auth() {
     <div className="flex items-center gap-4">
       <div className="flex items-center gap-2">
         {user.photoURL ? (
-          <img src={user.photoURL} alt={user.displayName || ''} className="w-8 h-8 rounded-full border border-zinc-200" />
+          <div className="relative w-8 h-8">
+            <Image 
+              src={user.photoURL} 
+              alt={user.displayName || ''} 
+              fill 
+              className="rounded-full border border-zinc-200 object-cover" 
+              referrerPolicy="no-referrer"
+            />
+          </div>
         ) : (
           <div className="w-8 h-8 rounded-full bg-zinc-100 flex items-center justify-center border border-zinc-200">
             <UserIcon className="w-4 h-4 text-zinc-500" />

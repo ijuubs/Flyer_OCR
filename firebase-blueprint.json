@@ -8,7 +8,11 @@
         "name": { "type": "string", "description": "Name of the supermarket (e.g., MH, RB Patel, NewWorld)" },
         "location": { "type": "string", "description": "Physical location or branch name" },
         "openingHours": { "type": "string", "description": "Store opening hours" },
-        "logoUrl": { "type": "string", "description": "URL to the store logo" }
+        "logoUrl": { "type": "string", "description": "URL to the store logo" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "needsReview": { "type": "boolean" },
+        "validationErrors": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["name"]
     },
@@ -22,7 +26,10 @@
         "validityStart": { "type": "string", "format": "date-time", "description": "Start date of the promotion" },
         "validityEnd": { "type": "string", "format": "date-time", "description": "End date of the promotion" },
         "imageUrl": { "type": "string", "description": "URL to the flyer image" },
-        "processed": { "type": "boolean", "description": "Whether the flyer has been OCR processed" }
+        "processed": { "type": "boolean", "description": "Whether the flyer has been OCR processed" },
+        "createdBy": { "type": "string" },
+        "needsReview": { "type": "boolean" },
+        "validationErrors": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["storeId", "imageUrl"]
     },
@@ -32,12 +39,21 @@
       "type": "object",
       "properties": {
         "name": { "type": "string", "description": "Name of the product" },
+        "canonicalName": { "type": "string", "description": "Standardized name for matching" },
         "category": { "type": "string", "description": "Product category (e.g., Dairy, Meat, Pantry)" },
         "brand": { "type": "string", "description": "Brand of the product" },
         "lastPrice": { "type": "number", "description": "The most recently recorded price" },
-        "lastStoreId": { "type": "string", "description": "The store where the last price was recorded" }
+        "previousPrice": { "type": "number", "description": "The price recorded before the last update" },
+        "priceChange": { "type": "number", "description": "Percentage change between last and previous price" },
+        "lastStoreId": { "type": "string", "description": "The store where the last price was recorded" },
+        "productImageUrl": { "type": "string", "description": "URL to the latest product image" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string" },
+        "needsReview": { "type": "boolean" },
+        "validationErrors": { "type": "array", "items": { "type": "string" } }
       },
-      "required": ["name"]
+      "required": ["name", "canonicalName"]
     },
     "PriceRecord": {
       "title": "PriceRecord",
@@ -47,11 +63,19 @@
         "productId": { "type": "string", "description": "Reference to the Product entity" },
         "flyerId": { "type": "string", "description": "Reference to the Flyer entity" },
         "storeId": { "type": "string", "description": "Reference to the Store entity" },
+        "storeName": { "type": "string", "description": "Denormalized store name" },
+        "storeLocation": { "type": "string", "description": "Denormalized store location" },
+        "productName": { "type": "string", "description": "Denormalized product name" },
         "price": { "type": "number", "description": "The promotional price" },
         "unit": { "type": "string", "description": "Unit of measurement (e.g., kg, pack, 500g)" },
         "originalPrice": { "type": "number", "description": "The original price before discount" },
         "extractedAt": { "type": "string", "format": "date-time", "description": "When the price was extracted" },
-        "isSpecial": { "type": "boolean", "description": "Whether this is a special deal" }
+        "isSpecial": { "type": "boolean", "description": "Whether this is a special deal" },
+        "boundingBox": { "type": "object", "description": "Coordinates of the product in the flyer" },
+        "productImageUrl": { "type": "string", "description": "URL to the product image from this flyer" },
+        "createdBy": { "type": "string" },
+        "needsReview": { "type": "boolean" },
+        "validationErrors": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["productId", "storeId", "price"]
     }

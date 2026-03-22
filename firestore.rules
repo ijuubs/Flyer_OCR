@@ -6,16 +6,16 @@ service cloud.firestore {
     // ===============================================================
     //
     // Collection: stores
-    // Fields: name, location, openingHours, logoUrl
+    // Fields: name, location, openingHours, logoUrl, createdAt, createdBy, needsReview, validationErrors
     //
     // Collection: flyers
-    // Fields: storeId, uploadDate, validityStart, validityEnd, imageUrl, processed
+    // Fields: storeId, uploadDate, validityStart, validityEnd, imageUrl, processed, createdBy, needsReview, validationErrors
     //
     // Collection: products
-    // Fields: name, category, brand, lastPrice, lastStoreId
+    // Fields: name, canonicalName, category, brand, lastPrice, lastStoreId, productImageUrl, createdAt, updatedAt, createdBy, needsReview, validationErrors
     //
     // Collection: prices
-    // Fields: productId, flyerId, storeId, price, unit, originalPrice, extractedAt, isSpecial
+    // Fields: productId, flyerId, storeId, price, unit, originalPrice, extractedAt, isSpecial, boundingBox, productImageUrl, createdBy, needsReview, validationErrors
     //
     // ===============================================================
 
@@ -26,69 +26,127 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() && 
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
          (request.auth.token.email == "vitideals@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function uidUnchanged() {
+      return !('createdBy' in request.resource.data) ||
+        request.resource.data.createdBy == request.auth.uid;
+    }
+
+    function uidNotModified() {
+      return !('createdBy' in request.resource.data) ||
+        request.resource.data.createdBy == resource.data.createdBy;
     }
 
     function hasRequiredFields(fields) {
       return request.resource.data.keys().hasAll(fields);
     }
 
+    function isRecent(timestamp) {
+      return timestamp is timestamp && 
+        timestamp > request.time - duration.value(24, 'h') &&
+        timestamp < request.time + duration.value(24, 'h');
+    }
+
     function isValidStore(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
-             (!('location' in data) || (data.location is string && data.location.size() < 200)) &&
-             (!('openingHours' in data) || (data.openingHours is string && data.openingHours.size() < 200)) &&
-             (!('logoUrl' in data) || (data.logoUrl is string && data.logoUrl.size() < 500));
+      return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             (!('location' in data) || (data.location is string && data.location.size() < 500)) &&
+             (!('openingHours' in data) || (data.openingHours is string && data.openingHours.size() < 500)) &&
+             (!('createdAt' in data) || data.createdAt is timestamp) &&
+             (!('createdBy' in data) || data.createdBy is string) &&
+             (!('needsReview' in data) || data.needsReview is bool) &&
+             (!('validationErrors' in data) || data.validationErrors is list && data.validationErrors.size() < 50);
     }
 
     function isValidFlyer(data) {
       return data.storeId is string &&
-             data.imageUrl is string && data.imageUrl.size() < 1000 &&
-             (!('processed' in data) || data.processed is bool);
+             data.imageUrl is string && data.imageUrl.size() <= 1048576 &&
+             (!('processed' in data) || data.processed is bool) &&
+             (!('uploadDate' in data) || data.uploadDate is timestamp) &&
+             (!('createdBy' in data) || data.createdBy is string) &&
+             (!('validityStart' in data) || data.validityStart == null || data.validityStart is timestamp || data.validityStart is string) &&
+             (!('validityEnd' in data) || data.validityEnd == null || data.validityEnd is timestamp || data.validityEnd is string) &&
+             (!('needsReview' in data) || data.needsReview is bool) &&
+             (!('validationErrors' in data) || data.validationErrors is list && data.validationErrors.size() < 50);
     }
 
     function isValidProduct(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             (!('canonicalName' in data) || data.canonicalName is string && data.canonicalName.size() < 200) &&
              (!('category' in data) || (data.category is string && data.category.size() < 100)) &&
-             (!('brand' in data) || (data.brand is string && data.brand.size() < 100));
+             (!('brand' in data) || (data.brand is string && data.brand.size() < 100)) &&
+             (!('lastPrice' in data) || data.lastPrice is number) &&
+             (!('previousPrice' in data) || data.previousPrice is number) &&
+             (!('priceChange' in data) || data.priceChange is number) &&
+             (!('lastStoreId' in data) || data.lastStoreId is string) &&
+             (!('productImageUrl' in data) || (data.productImageUrl is string && data.productImageUrl.size() <= 1048576)) &&
+             (!('createdAt' in data) || data.createdAt is timestamp) &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp) &&
+             (!('createdBy' in data) || data.createdBy is string) &&
+             (!('needsReview' in data) || data.needsReview is bool) &&
+             (!('validationErrors' in data) || data.validationErrors is list && data.validationErrors.size() < 50);
     }
 
     function isValidPrice(data) {
       return data.productId is string &&
              data.storeId is string &&
              data.price is number && data.price >= 0 &&
+             (!('storeName' in data) || data.storeName is string && data.storeName.size() < 200) &&
+             (!('storeLocation' in data) || data.storeLocation is string && data.storeLocation.size() < 500) &&
+             (!('productName' in data) || data.productName is string && data.productName.size() < 200) &&
+             (!('flyerId' in data) || data.flyerId is string) &&
              (!('unit' in data) || (data.unit is string && data.unit.size() < 50)) &&
-             (!('originalPrice' in data) || (data.originalPrice is number && data.originalPrice >= 0)) &&
-             (!('isSpecial' in data) || data.isSpecial is bool);
+             (!('originalPrice' in data) || data.originalPrice == null || data.originalPrice is number) &&
+             (!('isSpecial' in data) || data.isSpecial is bool) &&
+             (!('extractedAt' in data) || data.extractedAt is timestamp) &&
+             (!('boundingBox' in data) || data.boundingBox == null || data.boundingBox is map) &&
+             (!('productImageUrl' in data) || (data.productImageUrl is string && data.productImageUrl.size() <= 1048576)) &&
+             (!('createdBy' in data) || data.createdBy is string) &&
+             (!('needsReview' in data) || data.needsReview is bool) &&
+             (!('validationErrors' in data) || data.validationErrors is list && data.validationErrors.size() < 50);
     }
 
     // Rules
     match /users/{userId} {
       allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
-      allow create, update: if isAuthenticated() && request.auth.uid == userId && 
-        (!('role' in request.resource.data) || request.resource.data.role == 'user' || isAdmin());
+      allow create: if isAuthenticated() && request.auth.uid == userId && 
+        (!('role' in request.resource.data) || request.resource.data.role == 'user');
+      allow update: if isAuthenticated() && request.auth.uid == userId && 
+        (!('role' in request.resource.data) || request.resource.data.role == resource.data.role || isAdmin());
     }
 
     match /stores/{storeId} {
-      allow read: if true; // Publicly readable
-      allow create, update, delete: if isAdmin();
+      allow read: if true;
+      allow create: if isAdmin() && isValidStore(request.resource.data) && uidUnchanged();
+      allow update: if isAdmin() && isValidStore(request.resource.data) && uidNotModified();
+      allow delete: if isAdmin();
     }
 
     match /flyers/{flyerId} {
       allow read: if true;
-      allow create, update: if isAuthenticated() && isValidFlyer(request.resource.data);
+      allow create: if isAdmin() && isValidFlyer(request.resource.data) && uidUnchanged();
+      allow update: if isAdmin() && isValidFlyer(request.resource.data) && uidNotModified();
       allow delete: if isAdmin();
     }
 
     match /products/{productId} {
       allow read: if true;
-      allow create, update: if isAuthenticated() && isValidProduct(request.resource.data);
+      allow create: if isAdmin() && isValidProduct(request.resource.data) && uidUnchanged();
+      allow update: if isAdmin() && isValidProduct(request.resource.data) && uidNotModified();
       allow delete: if isAdmin();
     }
 
     match /prices/{priceId} {
       allow read: if true;
-      allow create, update: if isAuthenticated() && isValidPrice(request.resource.data);
+      allow create: if isAdmin() && isValidPrice(request.resource.data) && uidUnchanged();
+      allow update: if isAdmin() && isValidPrice(request.resource.data) && uidNotModified();
       allow delete: if isAdmin();
     }
 
