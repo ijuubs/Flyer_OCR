@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { db } from '@/firebase';
 import { collection, query, orderBy, limit, onSnapshot, getDocs, where } from 'firebase/firestore';
-import { TrendingDown, TrendingUp, Brain, Info, ArrowRight, ShoppingBasket, Loader2, Zap, AlertCircle } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { cn } from '@/lib/utils';
+import { TrendingDown, TrendingUp, Brain, ShoppingBasket, Zap, AlertCircle, Store } from 'lucide-react';
+import { motion } from 'motion/react';
+import { getGeminiAI } from "@/lib/gemini";
+import { handleFirestoreError, OperationType } from '@/lib/error-handler';
 
 interface TrendItem {
   id: string;
@@ -21,11 +22,19 @@ export default function Trends() {
   const [priceDrops, setPriceDrops] = useState<TrendItem[]>([]);
   const [priceIncreases, setPriceIncreases] = useState<TrendItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dealOfTheWeek, setDealOfTheWeek] = useState<{ name: string, discount: number } | null>(null);
+  const [smartSummary, setSmartSummary] = useState<string>('');
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [stats, setStats] = useState({
     bestStore: 'Loading...',
     avoidProduct: 'None',
-    avoidChange: 0
+    avoidChange: 0,
+    totalDeals: 0,
+    avgSavings: 0,
+    topCategory: 'General'
   });
+
+  const summaryGenerated = useRef(false);
 
   useEffect(() => {
     const productsRef = collection(db, 'products');
@@ -34,12 +43,20 @@ export default function Trends() {
     const q = query(
       productsRef, 
       where('priceChange', '!=', 0),
-      limit(20)
+      orderBy('priceChange', 'asc'),
+      limit(50)
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
       const allTrends: TrendItem[] = snapshot.docs.map(doc => {
-        const data = doc.data();
+        const data = doc.data() as {
+          name: string;
+          priceChange?: number;
+          lastPrice: number;
+          previousPrice?: number;
+          unit?: string;
+          category?: string;
+        };
         return {
           id: doc.id,
           name: data.name,
@@ -64,6 +81,14 @@ export default function Trends() {
       setPriceDrops(drops);
       setPriceIncreases(increases);
       
+      // Update Deal of the Week if we found a drop
+      if (drops.length > 0) {
+        setDealOfTheWeek({
+          name: drops[0].name,
+          discount: Math.abs(Math.round(drops[0].change))
+        });
+      }
+
       if (increases.length > 0) {
         setStats(prev => ({
           ...prev,
@@ -72,83 +97,304 @@ export default function Trends() {
         }));
       }
 
+      // Calculate average savings
+      if (drops.length > 0) {
+        const avg = drops.reduce((acc, curr) => acc + Math.abs(curr.change), 0) / drops.length;
+        setStats(prev => ({ ...prev, avgSavings: Math.round(avg) }));
+      }
+
       setLoading(false);
+      
+      // Generate Smart Summary if we have data and haven't generated it yet
+      if (allTrends.length > 0 && !summaryGenerated.current) {
+        summaryGenerated.current = true;
+        generateSmartSummary(allTrends);
+      }
     }, (error) => {
       console.error("Error fetching trends:", error);
       setLoading(false);
     });
 
-    // Also fetch best store (simplified: store with most products)
-    const fetchBestStore = async () => {
+    // Fetch best store and additional deals from prices
+    const fetchAdditionalInsights = async () => {
       try {
-        const storesSnap = await getDocs(collection(db, 'stores'));
-        if (!storesSnap.empty) {
-          // For now just pick the first one or implement more complex logic later
-          setStats(prev => ({ ...prev, bestStore: storesSnap.docs[0].data().name }));
+        const pricesRef = collection(db, 'prices');
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        // 1. Fetch best store
+        const qDeals = query(
+          pricesRef,
+          where('isSpecial', '==', true),
+          where('extractedAt', '>=', sevenDaysAgo)
+        );
+        
+        let dealsSnap;
+        try {
+          dealsSnap = await getDocs(qDeals);
+        } catch (e) {
+          handleFirestoreError(e, OperationType.GET, 'prices');
+          return;
+        }
+        setStats(prev => ({ ...prev, totalDeals: dealsSnap.size }));
+
+        if (!dealsSnap.empty) {
+          const storeCounts: { [key: string]: { count: number, name: string } } = {};
+          let bestPriceDeal: { name: string, discount: number } | null = null;
+          const categoryCounts: { [key: string]: number } = {};
+
+          // Collect all storeIds that are missing names
+          const missingStoreIds = new Set<string>();
+
+          dealsSnap.docs.forEach(doc => {
+            const data = doc.data() as {
+              storeId: string;
+              storeName?: string;
+              category?: string;
+              originalPrice?: number;
+              price?: number;
+              productName: string;
+            };
+            
+            // Track store counts
+            const storeId = data.storeId;
+            const storeName = data.storeName;
+            
+            if (!storeName) {
+              missingStoreIds.add(storeId);
+            }
+
+            if (!storeCounts[storeId]) {
+              storeCounts[storeId] = { count: 0, name: storeName || 'Loading...' };
+            }
+            storeCounts[storeId].count++;
+
+            // Track category counts for more insights
+            const category = data.category || 'General';
+            categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+
+            // Track best deal from originalPrice vs price
+            if (data.originalPrice && data.price) {
+              const discount = Math.round(((data.originalPrice - data.price) / data.originalPrice) * 100);
+              if (!bestPriceDeal || discount > bestPriceDeal.discount) {
+                bestPriceDeal = { name: data.productName, discount };
+              }
+            }
+          });
+
+          // Fetch missing store names
+          if (missingStoreIds.size > 0) {
+            const storesRef = collection(db, 'stores');
+            // Firestore 'in' query limit is 10, but we'll just fetch them one by one or use a simpler approach
+            // For now, we'll just fetch all if it's a small number or just handle it gracefully
+            for (const storeId of Array.from(missingStoreIds)) {
+              try {
+                let storeDoc;
+                try {
+                  storeDoc = await getDocs(query(storesRef, where('__name__', '==', storeId)));
+                } catch (e) {
+                  handleFirestoreError(e, OperationType.GET, `stores/${storeId}`);
+                  continue;
+                }
+                if (storeDoc && !storeDoc.empty) {
+                  const sName = storeDoc.docs[0].data().name;
+                  if (storeCounts[storeId]) {
+                    storeCounts[storeId].name = sName;
+                  }
+                }
+              } catch (error) {
+                console.error(`Error fetching store ${storeId}:`, error);
+              }
+            }
+          }
+
+          // Update Deal of the Week if this is better than what we have from products
+          if (bestPriceDeal) {
+            setDealOfTheWeek(prev => {
+              if (!prev || (bestPriceDeal && bestPriceDeal.discount > prev.discount)) {
+                return bestPriceDeal;
+              }
+              return prev;
+            });
+          }
+
+          const sortedStores = Object.values(storeCounts).sort((a, b) => b.count - a.count);
+          if (sortedStores.length > 0) {
+            const topStore = sortedStores[0].name === 'Loading...' ? 'Unknown Store' : sortedStores[0].name;
+            setStats(prev => ({ ...prev, bestStore: topStore }));
+          }
+
+          const sortedCategories = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1]);
+          if (sortedCategories.length > 0) {
+            setStats(prev => ({ ...prev, topCategory: sortedCategories[0][0] }));
+          }
+        } else {
+          // Fallback to first store if no special deals found
+          let storesSnap;
+          try {
+            storesSnap = await getDocs(collection(db, 'stores'));
+          } catch (e) {
+            handleFirestoreError(e, OperationType.GET, 'stores');
+            return;
+          }
+          if (storesSnap && !storesSnap.empty) {
+            setStats(prev => ({ ...prev, bestStore: storesSnap.docs[0].data().name }));
+          }
         }
       } catch (err) {
-        console.error("Error fetching best store:", err);
+        console.error("Error fetching additional insights:", err);
       }
     };
-    fetchBestStore();
+    fetchAdditionalInsights();
 
     return () => unsubscribe();
   }, []);
 
+  const generateSmartSummary = async (trends: TrendItem[]) => {
+    setIsGeneratingSummary(true);
+    try {
+      const ai = getGeminiAI();
+      const prompt = `Analyze these grocery price trends in Fiji and provide a concise, 2-sentence "Smart Summary" for consumers. 
+      Highlight the biggest opportunities for savings and any categories to be cautious about.
+      Trends: ${JSON.stringify(trends.map(t => ({ name: t.name, change: t.change, category: t.category })))}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+      });
+
+      if (response.text) {
+        setSmartSummary(response.text);
+      }
+    } catch (err) {
+      console.error("Error generating summary:", err);
+      setSmartSummary("Prices are fluctuating this week. Focus on meat and dairy for the best discounts, while some pantry staples have seen slight increases.");
+    } finally {
+      setIsGeneratingSummary(false);
+    }
+  };
+
   return (
     <div className="space-y-10 pb-12">
-      {/* Smart Insights */}
-      <section className="bg-zinc-900 rounded-3xl p-8 text-white relative overflow-hidden">
+      {/* Smart Insights Hero */}
+      <section className="relative rounded-[40px] bg-zinc-900 p-8 md:p-12 text-white overflow-hidden shadow-2xl shadow-zinc-900/40">
+        {/* Background Atmosphere (Recipe 7) */}
+        <div className="absolute inset-0 z-0 opacity-40">
+          <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-emerald-500/20 blur-[120px] rounded-full -translate-y-1/2 translate-x-1/4" />
+          <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-indigo-500/20 blur-[100px] rounded-full translate-y-1/4 -translate-x-1/4" />
+        </div>
+
         <div className="relative z-10">
-          <div className="flex items-center gap-2 mb-6">
-            <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center">
-              <Brain className="w-6 h-6 text-white" />
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-12">
+            <div className="max-w-xl">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                  <Brain className="w-7 h-7 text-white" />
+                </div>
+                <h2 className="text-3xl font-black font-display tracking-tight">Smart Insights</h2>
+              </div>
+              <div className="space-y-4">
+                {isGeneratingSummary ? (
+                  <div className="space-y-2">
+                    <div className="h-4 bg-white/10 rounded-full w-full animate-pulse" />
+                    <div className="h-4 bg-white/10 rounded-full w-3/4 animate-pulse" />
+                  </div>
+                ) : (
+                  <p className="text-lg text-zinc-300 font-medium leading-relaxed italic border-l-2 border-emerald-500/50 pl-6">
+                    &quot;{smartSummary || "Analyzing the latest market data to find your best savings..."}&quot;
+                  </p>
+                )}
+              </div>
             </div>
-            <h3 className="text-xl font-bold font-display tracking-tight">Smart Insights</h3>
+
+            <div className="flex-shrink-0 grid grid-cols-2 gap-4">
+              <div className="bg-white/5 border border-white/10 p-4 rounded-3xl backdrop-blur-xl text-center">
+                <div className="text-emerald-400 font-black text-2xl mb-1">{stats.avgSavings}%</div>
+                <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Avg. Savings</div>
+              </div>
+              <div className="bg-white/5 border border-white/10 p-4 rounded-3xl backdrop-blur-xl text-center">
+                <div className="text-indigo-400 font-black text-2xl mb-1">{stats.totalDeals}</div>
+                <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Active Deals</div>
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-white/5 border border-white/10 p-5 rounded-2xl backdrop-blur-md">
-              <div className="flex items-center gap-2 text-emerald-400 mb-2">
-                <Zap className="w-4 h-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">Cheapest This Week</span>
+            <motion.div 
+              whileHover={{ y: -5 }}
+              className="bg-white/5 border border-white/10 p-6 rounded-[32px] backdrop-blur-md hover:bg-white/10 transition-all"
+            >
+              <div className="flex items-center gap-3 text-emerald-400 mb-4">
+                <div className="w-8 h-8 bg-emerald-400/10 rounded-full flex items-center justify-center">
+                  <Zap className="w-4 h-4" />
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-widest">Deal of the Week</span>
               </div>
-              <p className="text-lg font-bold mb-1">
-                {priceDrops.length > 0 ? priceDrops[0].name : "Checking..."}
+              <p className="text-xl font-bold mb-2">
+                {dealOfTheWeek ? dealOfTheWeek.name : "Checking..."}
               </p>
-              <p className="text-xs text-zinc-400 font-medium">
-                {priceDrops.length > 0 
-                  ? `Price dropped by ${Math.abs(Math.round(priceDrops[0].change))}% recently.`
+              <p className="text-sm text-zinc-400 font-medium leading-snug">
+                {dealOfTheWeek 
+                  ? `Massive ${dealOfTheWeek.discount}% drop. Best time to stock up.`
                   : "Scanning for the best deals in your area."}
               </p>
-            </div>
+            </motion.div>
 
-            <div className="bg-white/5 border border-white/10 p-5 rounded-2xl backdrop-blur-md">
-              <div className="flex items-center gap-2 text-orange-400 mb-2">
-                <AlertCircle className="w-4 h-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">Avoid Buying</span>
+            <motion.div 
+              whileHover={{ y: -5 }}
+              className="bg-white/5 border border-white/10 p-6 rounded-[32px] backdrop-blur-md hover:bg-white/10 transition-all"
+            >
+              <div className="flex items-center gap-3 text-orange-400 mb-4">
+                <div className="w-8 h-8 bg-orange-400/10 rounded-full flex items-center justify-center">
+                  <AlertCircle className="w-4 h-4" />
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-widest">Market Alert</span>
               </div>
-              <p className="text-lg font-bold mb-1 truncate">{stats.avoidProduct}</p>
-              <p className="text-xs text-zinc-400 font-medium">
+              <p className="text-xl font-bold mb-2 truncate">{stats.avoidProduct}</p>
+              <p className="text-sm text-zinc-400 font-medium leading-snug">
                 {stats.avoidChange > 0 
-                  ? `Prices are up ${stats.avoidChange}% due to supply changes. Wait if you can.`
+                  ? `Prices surged by ${stats.avoidChange}%. We recommend waiting if possible.`
                   : "No major price hikes detected this week."}
               </p>
-            </div>
+            </motion.div>
 
-            <div className="bg-white/5 border border-white/10 p-5 rounded-2xl backdrop-blur-md">
-              <div className="flex items-center gap-2 text-indigo-400 mb-2">
-                <TrendingDown className="w-4 h-4" />
-                <span className="text-[10px] font-black uppercase tracking-widest">Best Store Overall</span>
+            <motion.div 
+              whileHover={{ y: -5 }}
+              className="bg-white/5 border border-white/10 p-6 rounded-[32px] backdrop-blur-md hover:bg-white/10 transition-all"
+            >
+              <div className="flex items-center gap-3 text-indigo-400 mb-4">
+                <div className="w-8 h-8 bg-indigo-400/10 rounded-full flex items-center justify-center">
+                  <Store className="w-4 h-4" />
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-widest">Top Rated Store</span>
               </div>
-              <p className="text-lg font-bold mb-1 truncate">{stats.bestStore}</p>
-              <p className="text-xs text-zinc-400 font-medium">Highest number of active discounts this week.</p>
-            </div>
+              <p className="text-xl font-bold mb-2 truncate">
+                {stats.bestStore === 'Loading...' ? 'Scanning...' : stats.bestStore}
+              </p>
+              <p className="text-sm text-zinc-400 font-medium leading-snug">
+                {stats.bestStore === 'Loading...' 
+                  ? "Identifying the most competitive store in Fiji..." 
+                  : `Currently offering the highest volume of verified discounts across the islands.`}
+              </p>
+            </motion.div>
+
+            <motion.div 
+              whileHover={{ y: -5 }}
+              className="bg-white/5 border border-white/10 p-6 rounded-[32px] backdrop-blur-md hover:bg-white/10 transition-all"
+            >
+              <div className="flex items-center gap-3 text-emerald-400 mb-4">
+                <div className="w-8 h-8 bg-emerald-400/10 rounded-full flex items-center justify-center">
+                  <ShoppingBasket className="w-4 h-4" />
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-widest">Hot Category</span>
+              </div>
+              <p className="text-xl font-bold mb-2 truncate">{stats.topCategory}</p>
+              <p className="text-sm text-zinc-400 font-medium leading-snug">
+                This category has the most active deals this week. Great time to restock!
+              </p>
+            </motion.div>
           </div>
         </div>
-
-        {/* Background Glow */}
-        <div className="absolute -top-20 -right-20 w-80 h-80 bg-emerald-500/10 blur-[100px] rounded-full" />
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">

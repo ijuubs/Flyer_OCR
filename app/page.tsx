@@ -11,8 +11,7 @@ import {
   X,
   Zap,
   MapPin,
-  ChevronRight,
-  ArrowRight
+  ChevronRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
@@ -30,6 +29,7 @@ type Tab = 'home' | 'compare' | 'trends' | 'list' | 'admin';
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {

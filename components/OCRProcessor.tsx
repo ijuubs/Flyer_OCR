@@ -4,51 +4,56 @@ import { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { db, auth } from '@/firebase';
 import { collection, addDoc, query, where, getDocs, updateDoc, doc, serverTimestamp, getDocFromServer } from 'firebase/firestore';
-import { extractFlyerData, FlyerExtractionResult } from '@/lib/gemini';
-import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, X, Layers, ChevronRight, ChevronDown, ShieldCheck, ShieldAlert, Image as ImageIcon } from 'lucide-react';
+import { extractFlyerData, FlyerExtractionResult, generateProductImage, ExtractedProduct } from '@/lib/gemini';
+import { Upload, FileText, CheckCircle2, AlertCircle, Loader2, X, Layers, ChevronRight, ChevronDown, ShieldCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import Image from 'next/image';
 
-// Helper to resize image and convert to base64
-const resizeAndBase64 = (file: File, maxWidth = 1200, maxHeight = 1200): Promise<string> => {
+// Helper to convert file to base64
+const fileToBase64 = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new window.Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > maxWidth) {
-            height *= maxWidth / width;
-            width = maxWidth;
-          }
-        } else {
-          if (height > maxHeight) {
-            width *= maxHeight / height;
-            height = maxHeight;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.6)); // 0.6 quality to save space
-      };
-      img.onerror = () => reject(new Error('Failed to load image for resizing'));
-      img.src = e.target?.result as string;
-    };
-    reader.onerror = () => reject(new Error('Failed to read file for resizing'));
     reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = (error) => reject(error);
   });
 };
 
-// Helper to crop product image from flyer
-const cropProductImage = (base64Flyer: string, box: { ymin: number, xmin: number, ymax: number, xmax: number }): Promise<string> => {
+// Helper to resize image from URL and convert to base64
+const resizeImageFromUrl = (url: string, maxWidth = 1200, maxHeight = 1200): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width *= maxHeight / height;
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', 0.6)); // 0.6 quality to save space
+    };
+    img.onerror = () => reject(new Error('Failed to load image for resizing'));
+    img.src = url;
+  });
+};
+
+// Helper to crop product image from flyer URL
+const cropProductImageFromUrl = (url: string, box: { ymin: number, xmin: number, ymax: number, xmax: number }, maxWidth = 400, maxHeight = 400): Promise<string> => {
   return new Promise((resolve) => {
     const img = new window.Image();
     img.onload = () => {
@@ -60,25 +65,62 @@ const cropProductImage = (base64Flyer: string, box: { ymin: number, xmin: number
       }
 
       // Normalized coordinates 0-1000 from Gemini
-      const x = (box.xmin / 1000) * img.width;
-      const y = (box.ymin / 1000) * img.height;
-      const width = ((box.xmax - box.xmin) / 1000) * img.width;
-      const height = ((box.ymax - box.ymin) / 1000) * img.height;
+      let x = (box.xmin / 1000) * img.width;
+      let y = (box.ymin / 1000) * img.height;
+      let width = ((box.xmax - box.xmin) / 1000) * img.width;
+      let height = ((box.ymax - box.ymin) / 1000) * img.height;
+
+      // Add 5% padding around the box to ensure text isn't cut off
+      const padX = width * 0.05;
+      const padY = height * 0.05;
+      
+      x = Math.max(0, x - padX);
+      y = Math.max(0, y - padY);
+      width = Math.min(img.width - x, width + (padX * 2));
+      height = Math.min(img.height - y, height + (padY * 2));
+
+      // Resize if too large
+      let finalWidth = width;
+      let finalHeight = height;
+
+      if (finalWidth > finalHeight) {
+        if (finalWidth > maxWidth) {
+          finalHeight *= maxWidth / finalWidth;
+          finalWidth = maxWidth;
+        }
+      } else {
+        if (finalHeight > maxHeight) {
+          finalWidth *= maxHeight / finalHeight;
+          finalHeight = maxHeight;
+        }
+      }
 
       // Set canvas size to cropped area
-      canvas.width = Math.max(1, width);
-      canvas.height = Math.max(1, height);
+      canvas.width = Math.max(1, finalWidth);
+      canvas.height = Math.max(1, finalHeight);
 
       // Draw cropped image
-      ctx.drawImage(img, x, y, width, height, 0, 0, width, height);
+      ctx.drawImage(img, x, y, width, height, 0, 0, finalWidth, finalHeight);
       
       // Convert to small JPEG to save space in Firestore
-      resolve(canvas.toDataURL('image/jpeg', 0.7));
+      resolve(canvas.toDataURL('image/jpeg', 0.6));
     };
     img.onerror = () => resolve('');
-    img.src = base64Flyer.startsWith('data:') ? base64Flyer : `data:image/jpeg;base64,${base64Flyer}`;
+    img.src = url;
   });
 };
+
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    console.log("Firestore connection test successful");
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration. The client is offline.");
+    }
+    // Skip logging for other errors, as this is simply a connection test.
+  }
+}
 
 // Validation function for extracted data
 const validateFlyerData = (data: FlyerExtractionResult) => {
@@ -152,7 +194,7 @@ interface ProcessingFile {
   id: string;
   file: File;
   preview: string;
-  status: 'pending' | 'processing' | 'success' | 'error';
+  status: 'pending' | 'processing' | 'success' | 'error' | 'saving' | 'saved';
   progress: number;
   error?: string;
   result?: FlyerExtractionResult;
@@ -162,6 +204,10 @@ export default function OCRProcessor() {
   const [files, setFiles] = useState<ProcessingFile[]>([]);
   const [isProcessingAll, setIsProcessingAll] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    testConnection();
+  }, []);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const newFiles = acceptedFiles.map(file => ({
@@ -195,198 +241,49 @@ export default function OCRProcessor() {
     });
   };
 
-  const processSingleFile = async (fileItem: ProcessingFile) => {
-    if (fileItem.status === 'success' || fileItem.status === 'processing') return;
+  const updateResult = (fileId: string, updatedResult: FlyerExtractionResult) => {
+    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, result: updatedResult } : f));
+  };
+
+  const updateProduct = (fileId: string, productIdx: number, updatedProduct: Partial<ExtractedProduct>) => {
+    setFiles(prev => prev.map(f => {
+      if (f.id === fileId && f.result) {
+        const newProducts = [...f.result.products];
+        newProducts[productIdx] = { ...newProducts[productIdx], ...updatedProduct };
+        return { ...f, result: { ...f.result, products: newProducts } };
+      }
+      return f;
+    }));
+  };
+
+  const extractData = async (fileItem: ProcessingFile) => {
+    if (fileItem.status === 'success' || fileItem.status === 'processing' || fileItem.status === 'saved') return;
 
     setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, status: 'processing', progress: 10 } : f));
 
     try {
-      const base64 = await fileToBase64(fileItem.file);
+      const base64DataUrl = await fileToBase64(fileItem.file);
+      const base64 = base64DataUrl.split(',')[1];
       const mimeType = fileItem.file.type;
-      
-      setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, progress: 20 } : f));
-      
-      // Resize flyer for storage
-      const resizedBase64 = await resizeAndBase64(fileItem.file);
       
       setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, progress: 30 } : f));
       
       const extraction = await extractFlyerData(base64, mimeType);
-      const validation = validateFlyerData(extraction);
+      console.log('Extraction successful:', extraction);
       
-      setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, progress: 60 } : f));
-
-      if (auth.currentUser) {
-        // 1. Find or create store
-        let storeId = '';
-        const storesRef = collection(db, 'stores');
-        const storeQuery = query(storesRef, where('name', '==', extraction.storeName));
-        
-        let storeSnap;
-        try {
-          storeSnap = await getDocs(storeQuery);
-        } catch (error) {
-          handleFirestoreError(error, OperationType.GET, 'stores');
-          return;
-        }
-
-        if (storeSnap.empty) {
-          try {
-            const newStore = await addDoc(storesRef, {
-              name: extraction.storeName,
-              location: extraction.location || '',
-              openingHours: extraction.openingHours || '',
-              createdAt: serverTimestamp(),
-              needsReview: !validation.isValid,
-              validationErrors: validation.errors
-            });
-            storeId = newStore.id;
-          } catch (error) {
-            handleFirestoreError(error, OperationType.CREATE, 'stores');
-            return;
-          }
-        } else {
-          storeId = storeSnap.docs[0].id;
-        }
-
-        setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, progress: 70 } : f));
-
-        // 2. Create flyer record
-        let flyerRef;
-        try {
-          flyerRef = await addDoc(collection(db, 'flyers'), {
-            storeId,
-            uploadDate: serverTimestamp(),
-            validityStart: extraction.validityStart || null,
-            validityEnd: extraction.validityEnd || null,
-            imageUrl: resizedBase64,
-            processed: true,
-            createdBy: auth.currentUser.uid,
-            needsReview: !validation.isValid,
-            validationErrors: validation.errors
-          });
-        } catch (error) {
-          handleFirestoreError(error, OperationType.CREATE, 'flyers');
-          return;
-        }
-
-        // 3. Process products and prices in parallel
-        await Promise.all(extraction.products.map(async (prod) => {
-          let productId = '';
-          const productsRef = collection(db, 'products');
-          const productQuery = query(productsRef, where('name', '==', prod.name));
-          
-          let productSnap;
-          try {
-            productSnap = await getDocs(productQuery);
-          } catch (error) {
-            handleFirestoreError(error, OperationType.GET, 'products');
-            return;
-          }
-
-          // Crop product image if bounding box exists
-          let productImageUrl = '';
-          if (prod.boundingBox) {
-            productImageUrl = await cropProductImage(base64, prod.boundingBox);
-          }
-
-          if (productSnap.empty) {
-            try {
-              const newProduct = await addDoc(productsRef, {
-                name: prod.name,
-                canonicalName: prod.canonicalName || prod.name,
-                category: prod.category || 'General',
-                brand: prod.brand || '',
-                lastPrice: prod.price,
-                previousPrice: prod.price,
-                priceChange: 0,
-                lastStoreId: storeId,
-                productImageUrl,
-                createdAt: serverTimestamp(),
-                createdBy: auth.currentUser?.uid,
-                needsReview: !validation.isValid || !prod.boundingBox,
-              });
-              productId = newProduct.id;
-            } catch (error) {
-              handleFirestoreError(error, OperationType.CREATE, 'products');
-              return;
-            }
-          } else {
-            productId = productSnap.docs[0].id;
-            const existingData = productSnap.docs[0].data();
-            const previousPrice = existingData.lastPrice;
-            const priceChange = previousPrice ? ((prod.price - previousPrice) / previousPrice) * 100 : 0;
-
-            try {
-              await updateDoc(doc(db, 'products', productId), {
-                previousPrice: previousPrice,
-                lastPrice: prod.price,
-                priceChange: priceChange,
-                lastStoreId: storeId,
-                productImageUrl: productImageUrl || existingData.productImageUrl,
-                updatedAt: serverTimestamp(),
-              });
-            } catch (error) {
-              handleFirestoreError(error, OperationType.UPDATE, `products/${productId}`);
-            }
-          }
-
-          try {
-            await addDoc(collection(db, 'prices'), {
-              productId,
-              flyerId: flyerRef.id,
-              storeId,
-              storeName: extraction.storeName,
-              storeLocation: extraction.location || '',
-              productName: prod.name,
-              price: prod.price,
-              unit: prod.unit || '',
-              originalPrice: prod.originalPrice || null,
-              isSpecial: prod.isSpecial || false,
-              productImageUrl,
-              boundingBox: prod.boundingBox || null,
-              extractedAt: serverTimestamp(),
-              createdBy: auth.currentUser?.uid,
-              needsReview: !validation.isValid || !prod.boundingBox,
-            });
-          } catch (error) {
-            handleFirestoreError(error, OperationType.CREATE, 'prices');
-          }
-        }));
-      }
-
       setFiles(prev => prev.map(f => f.id === fileItem.id ? { 
         ...f, 
         status: 'success', 
         progress: 100, 
         result: extraction 
       } : f));
-    } catch (err: any) {
-      console.error('Processing error:', err);
-      if (err instanceof Error) {
-        console.error('Error stack:', err.stack);
-      }
       
-      let errorMessage = 'Failed to extract data';
-      if (err instanceof Error) {
-        errorMessage = err.message;
-      } else if (err && typeof err === 'object') {
-        // Handle ProgressEvent or other browser events
-        if (err.type === 'error' && err.target instanceof FileReader) {
-          errorMessage = 'File reading failed';
-        } else if (err.isTrusted) {
-          errorMessage = 'Browser security or network error occurred';
-        } else {
-          try {
-            errorMessage = JSON.stringify(err);
-          } catch {
-            errorMessage = 'An unknown error occurred during processing';
-          }
-        }
-      } else if (typeof err === 'string') {
-        errorMessage = err;
-      }
-
+      // Auto-expand the first successful extraction if nothing is expanded
+      if (!expandedId) setExpandedId(fileItem.id);
+      
+    } catch (err: unknown) {
+      console.error('Extraction error:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to extract data';
       setFiles(prev => prev.map(f => f.id === fileItem.id ? { 
         ...f, 
         status: 'error', 
@@ -395,25 +292,232 @@ export default function OCRProcessor() {
     }
   };
 
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => resolve((reader.result as string).split(',')[1]);
-      reader.onerror = () => reject(new Error('Failed to read file for processing'));
-    });
+  const saveToFirestore = async (fileItem: ProcessingFile) => {
+    if (!fileItem.result || fileItem.status === 'saving' || fileItem.status === 'saved') return;
+    if (!auth.currentUser) {
+      alert("You must be logged in to save data.");
+      return;
+    }
+
+    setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, status: 'saving', progress: 0 } : f));
+    
+    try {
+      const extraction = fileItem.result;
+      const validation = validateFlyerData(extraction);
+      
+      // Resize flyer for storage using the preview URL
+      const resizedBase64 = await resizeImageFromUrl(fileItem.preview);
+      
+      setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, progress: 20 } : f));
+
+      // 1. Find or create store
+      let storeId = '';
+      const storesRef = collection(db, 'stores');
+      const storeQuery = query(storesRef, where('name', '==', extraction.storeName));
+      
+      let storeSnap;
+      try {
+        storeSnap = await getDocs(storeQuery);
+      } catch (e) {
+        handleFirestoreError(e, OperationType.GET, 'stores');
+        return; // handleFirestoreError throws, but for TS
+      }
+
+      if (storeSnap.empty) {
+        let newStore;
+        try {
+          newStore = await addDoc(storesRef, {
+            name: extraction.storeName,
+            location: extraction.location || '',
+            openingHours: extraction.openingHours || '',
+            createdAt: serverTimestamp(),
+            needsReview: !validation.isValid,
+            validationErrors: validation.errors
+          });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.CREATE, 'stores');
+          return;
+        }
+        storeId = newStore.id;
+      } else {
+        storeId = storeSnap.docs[0].id;
+      }
+
+      setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, progress: 40 } : f));
+
+      // 2. Create flyer record
+      let flyerRef;
+      try {
+        flyerRef = await addDoc(collection(db, 'flyers'), {
+          storeId,
+          uploadDate: serverTimestamp(),
+          validityStart: extraction.validityStart || null,
+          validityEnd: extraction.validityEnd || null,
+          imageUrl: resizedBase64,
+          processed: true,
+          createdBy: auth.currentUser?.uid,
+          needsReview: !validation.isValid,
+          validationErrors: validation.errors
+        });
+      } catch (e) {
+        handleFirestoreError(e, OperationType.CREATE, 'flyers');
+        return;
+      }
+
+      setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, progress: 60 } : f));
+
+      // 3. Process products and prices
+      const totalProducts = extraction.products.length;
+      let processedCount = 0;
+
+      for (const prod of extraction.products) {
+        let productId = '';
+        const productsRef = collection(db, 'products');
+        const productQuery = query(productsRef, where('name', '==', prod.name));
+        let productSnap;
+        try {
+          productSnap = await getDocs(productQuery);
+        } catch (e) {
+          handleFirestoreError(e, OperationType.GET, 'products');
+          continue; // Skip this product if fetch fails
+        }
+
+        // Crop product image if bounding box exists using the preview URL
+        let productImageUrl = '';
+        if (prod.boundingBox) {
+          productImageUrl = await cropProductImageFromUrl(fileItem.preview, prod.boundingBox);
+        }
+
+        if (productSnap.empty) {
+          // Generate AI placeholder image for new product
+          let aiPlaceholderUrl = await generateProductImage(
+            prod.canonicalName || prod.name, 
+            prod.category || 'Other',
+            prod.imageDescription
+          );
+
+          // Resize AI image to ensure it's small
+          if (aiPlaceholderUrl.startsWith('data:')) {
+            aiPlaceholderUrl = await resizeImageFromUrl(aiPlaceholderUrl, 400, 400);
+          }
+
+          let newProduct;
+          try {
+            newProduct = await addDoc(productsRef, {
+              name: prod.name,
+              canonicalName: prod.canonicalName || prod.name,
+              category: prod.category || 'Other',
+              brand: prod.brand || '',
+              lastPrice: prod.price,
+              previousPrice: prod.price,
+              priceChange: 0,
+              lastStoreId: storeId,
+              productImageUrl: aiPlaceholderUrl,
+              createdAt: serverTimestamp(),
+              createdBy: auth.currentUser?.uid,
+              needsReview: !validation.isValid || !prod.boundingBox,
+            });
+          } catch (e) {
+            handleFirestoreError(e, OperationType.CREATE, 'products');
+            continue;
+          }
+          productId = newProduct.id;
+        } else {
+          productId = productSnap.docs[0].id;
+          const existingData = productSnap.docs[0].data();
+          const previousPrice = existingData.lastPrice;
+          const priceChange = previousPrice ? ((prod.price - previousPrice) / previousPrice) * 100 : 0;
+
+          let updatedImageUrl = existingData.productImageUrl;
+          if (!updatedImageUrl) {
+            updatedImageUrl = await generateProductImage(
+              prod.canonicalName || prod.name, 
+              prod.category || 'Other',
+              prod.imageDescription
+            );
+            
+            // Resize AI image to ensure it's small
+            if (updatedImageUrl.startsWith('data:')) {
+              updatedImageUrl = await resizeImageFromUrl(updatedImageUrl, 400, 400);
+            }
+          }
+
+          try {
+            await updateDoc(doc(db, 'products', productId), {
+              previousPrice: previousPrice,
+              lastPrice: prod.price,
+              priceChange: priceChange,
+              lastStoreId: storeId,
+              productImageUrl: updatedImageUrl,
+              updatedAt: serverTimestamp(),
+            });
+          } catch (e) {
+            handleFirestoreError(e, OperationType.UPDATE, `products/${productId}`);
+          }
+        }
+
+        try {
+          await addDoc(collection(db, 'prices'), {
+            productId,
+            flyerId: flyerRef.id,
+            storeId,
+            storeName: extraction.storeName,
+            storeLocation: extraction.location || '',
+            productName: prod.name,
+            price: prod.price,
+            unit: prod.unit || '',
+            originalPrice: prod.originalPrice || null,
+            isSpecial: prod.isSpecial || false,
+            productImageUrl,
+            boundingBox: prod.boundingBox || null,
+            extractedAt: serverTimestamp(),
+            createdBy: auth.currentUser?.uid,
+            needsReview: !validation.isValid || !prod.boundingBox,
+          });
+        } catch (e) {
+          handleFirestoreError(e, OperationType.CREATE, 'prices');
+        }
+
+        processedCount++;
+        const currentProgress = 60 + (processedCount / totalProducts) * 40;
+        setFiles(prev => prev.map(f => f.id === fileItem.id ? { ...f, progress: currentProgress } : f));
+      }
+
+      setFiles(prev => prev.map(f => f.id === fileItem.id ? { 
+        ...f, 
+        status: 'saved', 
+        progress: 100 
+      } : f));
+
+    } catch (err: unknown) {
+      console.error('Saving error:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Save failed';
+      setFiles(prev => prev.map(f => f.id === fileItem.id ? { 
+        ...f, 
+        status: 'error', 
+        error: errorMessage
+      } : f));
+    }
   };
 
   const processAll = async () => {
     setIsProcessingAll(true);
     const pendingFiles = files.filter(f => f.status === 'pending' || f.status === 'error');
-    
-    // Process sequentially to avoid rate limits
     for (const fileItem of pendingFiles) {
-      await processSingleFile(fileItem);
+      await extractData(fileItem);
     }
     setIsProcessingAll(false);
   };
+
+  const saveAll = async () => {
+    setIsProcessingAll(true);
+    const readyFiles = files.filter(f => f.status === 'success');
+    for (const fileItem of readyFiles) {
+      await saveToFirestore(fileItem);
+    }
+    setIsProcessingAll(false);
+  };
+
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -424,16 +528,28 @@ export default function OCRProcessor() {
             <Layers className="w-5 h-5 text-zinc-500" />
             Bulk Flyer Upload
           </h2>
-          {files.length > 0 && (
-            <button
-              onClick={processAll}
-              disabled={isProcessingAll || files.every(f => f.status === 'success')}
-              className="px-4 py-2 bg-zinc-900 text-white rounded-xl text-sm font-medium hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
-            >
-              {isProcessingAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-              {isProcessingAll ? "Processing Queue..." : "Process All Files"}
-            </button>
-          )}
+          <div className="flex items-center gap-3">
+            {files.some(f => f.status === 'pending' || f.status === 'error') && (
+              <button
+                onClick={processAll}
+                disabled={isProcessingAll}
+                className="px-4 py-2 bg-zinc-900 text-white rounded-xl text-sm font-medium hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+              >
+                {isProcessingAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                Extract All
+              </button>
+            )}
+            {files.some(f => f.status === 'success') && (
+              <button
+                onClick={saveAll}
+                disabled={isProcessingAll}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+              >
+                {isProcessingAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                Save All Reviewed
+              </button>
+            )}
+          </div>
         </div>
         
         <div
@@ -506,23 +622,33 @@ export default function OCRProcessor() {
                     />
                   </div>
                   
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-                      {fileItem.status === 'pending' && "Ready to process"}
-                      {fileItem.status === 'processing' && `Analyzing... ${fileItem.progress}%`}
-                      {fileItem.status === 'success' && "Extraction Complete"}
-                      {fileItem.status === 'error' && fileItem.error}
-                    </span>
-                    {fileItem.status === 'success' && (
-                      <button 
-                        onClick={() => setExpandedId(expandedId === fileItem.id ? null : fileItem.id)}
-                        className="text-xs font-semibold text-zinc-900 flex items-center gap-1 hover:underline"
-                      >
-                        {expandedId === fileItem.id ? "Hide Details" : "View Details"}
-                        {expandedId === fileItem.id ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                      </button>
-                    )}
-                  </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
+                        {fileItem.status === 'pending' && "Ready to extract"}
+                        {fileItem.status === 'processing' && `Analyzing... ${fileItem.progress}%`}
+                        {fileItem.status === 'success' && "Review Required"}
+                        {fileItem.status === 'saving' && `Saving... ${Math.round(fileItem.progress)}%`}
+                        {fileItem.status === 'saved' && "Successfully Saved"}
+                        {fileItem.status === 'error' && fileItem.error}
+                      </span>
+                      {(fileItem.status === 'success' || fileItem.status === 'saved' || fileItem.status === 'saving') && (
+                        <button 
+                          onClick={() => setExpandedId(expandedId === fileItem.id ? null : fileItem.id)}
+                          className="text-xs font-semibold text-zinc-900 flex items-center gap-1 hover:underline"
+                        >
+                          {expandedId === fileItem.id ? "Hide Details" : "Review & Edit"}
+                          {expandedId === fileItem.id ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                        </button>
+                      )}
+                      {fileItem.status === 'pending' && (
+                        <button 
+                          onClick={() => extractData(fileItem)}
+                          className="text-xs font-bold text-zinc-900 uppercase tracking-tight hover:underline"
+                        >
+                          Extract Now
+                        </button>
+                      )}
+                    </div>
                 </div>
               </div>
 
@@ -536,37 +662,135 @@ export default function OCRProcessor() {
                     className="border-t border-zinc-100 bg-zinc-50/50"
                   >
                     <div className="p-6">
-                      <div className="flex justify-between items-start mb-4">
-                        <div>
-                          <h4 className="text-lg font-bold text-zinc-900">{fileItem.result.storeName}</h4>
-                          <p className="text-xs text-zinc-500">{fileItem.result.location}</p>
+                      <div className="flex flex-col md:flex-row justify-between items-start gap-4 mb-6">
+                        <div className="flex-grow space-y-3 w-full">
+                          <div>
+                            <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Store Name</label>
+                            <input 
+                              type="text" 
+                              value={fileItem.result.storeName}
+                              onChange={(e) => updateResult(fileItem.id, { ...fileItem.result!, storeName: e.target.value })}
+                              className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-900/10"
+                            />
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Location</label>
+                              <input 
+                                type="text" 
+                                value={fileItem.result.location || ''}
+                                onChange={(e) => updateResult(fileItem.id, { ...fileItem.result!, location: e.target.value })}
+                                className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-2 text-xs text-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-900/10"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Validity End</label>
+                              <input 
+                                type="text" 
+                                value={fileItem.result.validityEnd || ''}
+                                onChange={(e) => updateResult(fileItem.id, { ...fileItem.result!, validityEnd: e.target.value })}
+                                className="w-full bg-white border border-zinc-200 rounded-lg px-3 py-2 text-xs text-zinc-600 focus:outline-none focus:ring-2 focus:ring-zinc-900/10"
+                                placeholder="YYYY-MM-DD"
+                              />
+                            </div>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <p className="text-[10px] font-bold text-zinc-400 uppercase">Products Found</p>
-                          <p className="text-lg font-bold text-zinc-900">{fileItem.result.products.length}</p>
+                        <div className="flex flex-col items-end gap-3">
+                          <div className="text-right">
+                            <p className="text-[10px] font-bold text-zinc-400 uppercase">Products Found</p>
+                            <p className="text-2xl font-black text-zinc-900">{fileItem.result.products.length}</p>
+                          </div>
+                          {fileItem.status === 'success' && (
+                            <button
+                              onClick={() => saveToFirestore(fileItem)}
+                              className="px-6 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 flex items-center gap-2"
+                            >
+                              <ShieldCheck className="w-4 h-4" />
+                              Save to Database
+                            </button>
+                          )}
+                          {fileItem.status === 'saved' && (
+                            <div className="px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-bold flex items-center gap-2 border border-emerald-100">
+                              <CheckCircle2 className="w-4 h-4" />
+                              Saved Successfully
+                            </div>
+                          )}
                         </div>
                       </div>
                       
-                      <div className="space-y-2">
-                        {fileItem.result.products.slice(0, 5).map((prod, idx) => (
-                          <div key={idx} className="flex items-center gap-3 bg-white p-2 rounded-lg border border-zinc-100">
-                            {prod.boundingBox && (
-                              <div className="w-10 h-10 rounded bg-zinc-50 flex items-center justify-center overflow-hidden border border-zinc-100">
-                                <ImageIcon className="w-4 h-4 text-zinc-300" />
+                      <div className="space-y-3">
+                        <h5 className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-2">Product List</h5>
+                        {fileItem.result.products.map((prod, idx) => (
+                          <div key={idx} className="grid grid-cols-1 md:grid-cols-12 gap-3 bg-white p-3 rounded-xl border border-zinc-200 shadow-sm items-center">
+                            <div className="md:col-span-5">
+                              <input 
+                                type="text" 
+                                value={prod.name}
+                                onChange={(e) => updateProduct(fileItem.id, idx, { name: e.target.value })}
+                                className="w-full text-sm font-bold text-zinc-900 border-none p-0 focus:ring-0"
+                              />
+                              <div className="flex items-center gap-2 mt-1">
+                                <select 
+                                  value={prod.category || 'Other'}
+                                  onChange={(e) => updateProduct(fileItem.id, idx, { category: e.target.value })}
+                                  className="text-[10px] font-black text-zinc-400 uppercase tracking-wider bg-transparent border-none p-0 focus:ring-0 cursor-pointer hover:text-zinc-600"
+                                >
+                                  {['Dairy', 'Meat', 'Pantry', 'Household', 'Produce', 'Frozen', 'Beverages', 'Snacks', 'Other'].map(cat => (
+                                    <option key={cat} value={cat}>{cat}</option>
+                                  ))}
+                                </select>
+                                {prod.boundingBox ? (
+                                  <span className="text-[10px] bg-emerald-50 text-emerald-600 px-1.5 py-0.5 rounded font-bold">IMAGE OK</span>
+                                ) : (
+                                  <span className="text-[10px] bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded font-bold">NO IMAGE</span>
+                                )}
                               </div>
-                            )}
-                            <div className="flex-grow">
-                              <p className="text-sm font-medium text-zinc-700">{prod.name}</p>
-                              <p className="text-[10px] text-zinc-400 uppercase font-bold">{prod.category}</p>
                             </div>
-                            <span className="font-bold text-zinc-900">${prod.price.toFixed(2)}</span>
+                            <div className="md:col-span-3">
+                              <div className="flex items-center gap-1">
+                                <span className="text-zinc-400 text-sm font-bold">$</span>
+                                <input 
+                                  type="number" 
+                                  step="0.01"
+                                  value={prod.price}
+                                  onChange={(e) => updateProduct(fileItem.id, idx, { price: parseFloat(e.target.value) || 0 })}
+                                  className="w-20 text-lg font-black text-zinc-900 border-none p-0 focus:ring-0"
+                                />
+                              </div>
+                            </div>
+                            <div className="md:col-span-3">
+                              <input 
+                                type="text" 
+                                value={prod.unit || ''}
+                                onChange={(e) => updateProduct(fileItem.id, idx, { unit: e.target.value })}
+                                className="w-full text-xs text-zinc-500 border-none p-0 focus:ring-0"
+                                placeholder="Unit (e.g. 1kg, 500ml)"
+                              />
+                            </div>
+                            <div className="md:col-span-1 flex justify-end">
+                              <button 
+                                onClick={() => {
+                                  const newProducts = [...fileItem.result!.products];
+                                  newProducts.splice(idx, 1);
+                                  updateResult(fileItem.id, { ...fileItem.result!, products: newProducts });
+                                }}
+                                className="p-1.5 hover:bg-red-50 text-zinc-300 hover:text-red-500 rounded-lg transition-colors"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
                         ))}
-                        {fileItem.result.products.length > 5 && (
-                          <p className="text-center text-xs text-zinc-400 pt-2">
-                            + {fileItem.result.products.length - 5} more products extracted
-                          </p>
-                        )}
+                        
+                        <button 
+                          onClick={() => {
+                            const newProduct = { name: 'New Product', price: 0, unit: '', isSpecial: false, category: 'Other' };
+                            updateResult(fileItem.id, { ...fileItem.result!, products: [...fileItem.result!.products, newProduct as ExtractedProduct] });
+                          }}
+                          className="w-full py-3 border-2 border-dashed border-zinc-200 rounded-xl text-zinc-400 text-sm font-bold hover:border-zinc-300 hover:text-zinc-500 transition-all flex items-center justify-center gap-2"
+                        >
+                          + Add Product Manually
+                        </button>
                       </div>
                     </div>
                   </motion.div>

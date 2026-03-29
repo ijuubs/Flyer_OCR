@@ -49,12 +49,6 @@ service cloud.firestore {
       return request.resource.data.keys().hasAll(fields);
     }
 
-    function isRecent(timestamp) {
-      return timestamp is timestamp && 
-        timestamp > request.time - duration.value(24, 'h') &&
-        timestamp < request.time + duration.value(24, 'h');
-    }
-
     function isValidStore(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
              (!('location' in data) || (data.location is string && data.location.size() < 500)) &&

@@ -1,6 +1,17 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY! });
+let aiInstance: GoogleGenAI | null = null;
+
+export function getGeminiAI(): GoogleGenAI {
+  if (!aiInstance) {
+    const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not defined');
+    }
+    aiInstance = new GoogleGenAI({ apiKey });
+  }
+  return aiInstance;
+}
 
 export interface ExtractedProduct {
   name: string;
@@ -31,8 +42,23 @@ export interface FlyerExtractionResult {
   validationErrors?: string[];
 }
 
+export const PRODUCT_CATEGORIES = [
+  'Dairy',
+  'Meat',
+  'Pantry',
+  'Household',
+  'Produce',
+  'Frozen',
+  'Beverages',
+  'Snacks',
+  'Household Supplies',
+  'Personal Care',
+  'Other'
+];
+
 export async function extractFlyerData(base64Image: string, mimeType: string): Promise<FlyerExtractionResult> {
   try {
+    const ai = getGeminiAI();
     const response = await ai.models.generateContent({
       model: "gemini-3.1-pro-preview",
       contents: [
@@ -48,8 +74,10 @@ export async function extractFlyerData(base64Image: string, mimeType: string): P
               text: `Extract all product details from this supermarket flyer. 
               Identify the store name, location, opening hours, and deal validity dates.
               For each product, extract: name, price, unit, original price, and if it's a special deal.
-              Also categorize the products and identify the brand.
+              Also categorize the products strictly into one of these categories: ${PRODUCT_CATEGORIES.join(', ')}.
+              Identify the brand if possible.
               IMPORTANT: Provide a bounding box [ymin, xmin, ymax, xmax] for each product's visual area in the image (values 0-1000).
+              The bounding box MUST include the product image, its name, its price, and any unit information. Do not cut off the text.
               Provide a 'canonicalName' (standardized name) and a brief 'imageDescription' of the product's visual appearance.
               Return the data in a structured JSON format.`,
             },
@@ -109,5 +137,38 @@ export async function extractFlyerData(base64Image: string, mimeType: string): P
   } catch (err) {
     console.error("Gemini extraction error:", err);
     throw err;
+  }
+}
+
+export async function generateProductImage(productName: string, category: string, description?: string): Promise<string> {
+  try {
+    const ai = getGeminiAI();
+    const prompt = `A high-quality, professional product photography shot of ${productName}. 
+    Category: ${category}. 
+    ${description ? `Description: ${description}.` : ''}
+    The product should be centered on a clean, neutral studio background. 
+    Bright, commercial lighting. 4k resolution, highly detailed.`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: [{ parts: [{ text: prompt }] }],
+      config: {
+        imageConfig: {
+          aspectRatio: "1:1",
+        },
+      },
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        return `data:image/png;base64,${part.inlineData.data}`;
+      }
+    }
+    
+    throw new Error("No image data returned from Gemini");
+  } catch (err) {
+    console.error("Gemini image generation error:", err);
+    // Return a fallback placeholder if generation fails
+    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/400/400`;
   }
 }

@@ -3,10 +3,12 @@
 import { useState, useEffect } from 'react';
 import { auth, db } from '@/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import OCRProcessor from './OCRProcessor';
+import AdminStores from './AdminStores';
+import AdminDatabase from './AdminDatabase';
 import Auth from './Auth';
-import { LayoutDashboard, ScanLine, Store, Database, ShieldCheck, Loader2, LogIn, AlertCircle } from 'lucide-react';
+import { LayoutDashboard, ScanLine, Store, Database, ShieldCheck, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 
@@ -24,7 +26,7 @@ export default function AdminPanel() {
       if (user) {
         // Check if user is admin
         // For now, we'll check the email or a role in Firestore
-        if (user.email === 'vitideals@gmail.com') {
+        if (user.email === 'vitideals@gmail.com' && user.emailVerified) {
           setIsAdmin(true);
         } else {
           try {
@@ -138,25 +140,9 @@ export default function AdminPanel() {
           
           {activeTab === 'ocr' && <OCRProcessor />}
           
-          {activeTab === 'stores' && (
-            <div className="bg-white p-10 rounded-[40px] border border-zinc-200 shadow-sm text-center">
-              <Store className="w-12 h-12 text-zinc-200 mx-auto mb-4" />
-              <h3 className="text-xl font-bold text-zinc-900 mb-2">Store Management</h3>
-              <p className="text-zinc-500 text-sm max-w-xs mx-auto">
-                Add, edit, or remove supermarket branches and their locations.
-              </p>
-            </div>
-          )}
+          {activeTab === 'stores' && <AdminStores />}
           
-          {activeTab === 'database' && (
-            <div className="bg-white p-10 rounded-[40px] border border-zinc-200 shadow-sm text-center">
-              <Database className="w-12 h-12 text-zinc-200 mx-auto mb-4" />
-              <h3 className="text-xl font-bold text-zinc-900 mb-2">Product Database</h3>
-              <p className="text-zinc-500 text-sm max-w-xs mx-auto">
-                Search, edit, or delete product entries and view price history.
-              </p>
-            </div>
-          )}
+          {activeTab === 'database' && <AdminDatabase />}
         </motion.div>
       </AnimatePresence>
     </div>

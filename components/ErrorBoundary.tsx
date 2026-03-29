@@ -45,7 +45,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             errorMessage = `Database Error: ${parsed.error}`;
           }
         }
-      } catch (e) {
+      } catch {
         // Not JSON, use default or raw message
         if (this.state.error?.message) {
           errorMessage = this.state.error.message;
